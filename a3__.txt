@@ -1,0 +1,298 @@
+library(igraph)
+library(tidyverse)
+library(data.table)
+
+
+# reading in data
+setwd("C:/Users/Adil Ashish Kumar/Desktop/673 - Social Network/A3")
+border = fread("border_information.csv", header = TRUE)
+district = fread("district_information.csv", header = TRUE)
+rain = fread("rain_information.csv", header = TRUE)
+parties = fread("new_parties_in_each_district_by_candidate.csv", header = TRUE)
+
+#unique election years across districts
+yearlist = sort(unique(district$year))
+
+rain2 = rain
+
+mapyear = c(1951,1951,1951,1951,1951,1951,1957,1957,1957,1957,1957,1957,1962,1962,1962,1962,1962,1967,1967,1967,1967,1967,1971,1971,
+            1971,1971,1977,1977,1977,1977,1977,1977,1980,1980,1980,1984,1984,1984,1984,1985,1989,1989,1989,1989,1991,1991,
+            1996,1996,1996,1996,1996,1998,1998,1999)
+
+#unique rain years across districts
+year = unique(rain$year)
+year = year[-c(55,56,57,58)]
+
+# map rain years to election years table
+maptable = cbind(year,mapyear)
+maptable = as.data.frame(maptable)
+
+#joining election years to rain data
+rain2 = left_join(rain2,maptable)
+
+rain3 = rain2
+rain3$year=NULL
+rain3$spi = NULL
+
+#aggregating rain sum by election period
+rain3ag <-setNames(aggregate(rain3$rain, by=list(rain3$district,rain3$mapyear),FUN=sum, na.rm=TRUE),c("district", "year","rain"))
+
+rain4 = rain2
+rain4$year=NULL
+rain4$rain = NULL
+
+#aggregating spi avg by election period
+rain4ag <-setNames(aggregate(rain4$spi, by=list(rain4$district,rain4$mapyear),FUN=mean, na.rm=TRUE),c("district", "year","spi"))
+
+#joining rain and spi into 1 df
+rainfinal = left_join(rain3ag,rain4ag)
+
+#joining rain,spf into district data 
+district2 = left_join(district,rainfinal)
+
+#Q1a
+plot(district2$rain,district2$new_parties,xlab = "Rainfall",ylab = "No of political parties founded",title("Scatter plot - Rainfall vs No of political parties founded"), ylim=c(-1,13))
+plot(district2$spi,district2$new_parties,xlab = "Mean SPI",ylab = "No of political parties founded",title("Scatter plot - Mean SPI vs No of political parties founded"), ylim=c(-1,13))
+
+#picking only rain data by district
+district3 = district2
+fil = c("district","year","new_parties","rain")
+district3 = district3[fil]
+
+#creating lagged rain data
+district4 = district3 %>% 
+  group_by(district) %>% 
+  arrange(district,year) %>% 
+  mutate(prev = dplyr::lag(rain))
+district4 = as.data.frame(district4)
+
+#ccreating border rain data
+borderdata = district4
+borderdata$rain =NULL
+borderdata$new_parties = NULL
+
+borderdata = as.data.frame(borderdata)
+names(borderdata) <- c("district", "year","Prev")
+
+#joining district rain data to border file
+borderdata1 = left_join(border,borderdata)
+names(borderdata1) <- c("district","border_district", "year","Prev_dis")
+
+borderdata1 = borderdata1[borderdata1$year!=0,]
+borderdata1[is.na(borderdata1)] <- 0
+
+# focal district wise avg border lag rain data aggregation
+borderdata2 <-setNames(aggregate(borderdata1$Prev_dis, by=list(borderdata1$district,borderdata1$year),FUN=mean, na.rm=TRUE),c("district", "year","border_rain"))
+
+# adding border lag rain to district raindata
+district5 = left_join(district4,borderdata2)
+colnames(district5)[colnames(district5)=="prev"] <- "prev_rain"
+district5[is.na(district5)] <- 0
+
+# no of years in election period
+pyears = setNames(aggregate(maptable$year, by=list(maptable$mapyear),FUN=min, na.rm=TRUE),c("period", "minyear"))
+pyears$noyr = pyears$period- pyears$minyear+1
+pyears$minyear = NULL
+names(pyears) = c("year","noyr")
+
+district5 = left_join(district5,pyears)
+
+#Q1B
+library(plm)
+reg = plm(rain ~ prev_rain+border_rain+noyr, district5, effect = "twoways", model = "within", index = "district")
+summary(reg)
+
+#finding lag spi
+spa = rain4ag
+
+spa1 = spa %>%  
+  group_by(district) %>% 
+  arrange(district,year) %>% 
+  mutate(prev = dplyr::lag(spi))
+
+
+spa1 = as.data.frame(spa1)
+
+#finding border district spi
+borderspa = spa1
+borderspa$spi =NULL
+
+borderspa = as.data.frame(borderspa)
+names(borderspa) <- c("district", "year","Prev")
+
+#getting border wise spi
+borderspa1 = left_join(border,borderspa)
+names(borderspa1) <- c("district","border_district", "year","Prev_dis")
+
+borderspa1 = borderspa1[borderspa1$year!=0,]
+borderspa1[is.na(borderspa1)] <- 0
+
+# getting avg lag border spi
+borderspa2 <-setNames(aggregate(borderspa1$Prev_dis, by=list(borderspa1$district,borderspa1$year),FUN=mean, na.rm=TRUE),c("district", "year","border_spi"))
+
+#joining border lag spi to spi data
+spafin = left_join(spa1,borderspa2)
+colnames(spafin)[colnames(spafin)=="prev"] <- "prev_spi"
+spafin[is.na(spafin)] <- 0
+
+#getting party counts
+par = district5[,c(1,2,3,7)]
+par = unique(par)
+spafin2 = left_join(spafin, par)
+#spafin2 = left_join(spafin2, pyears)
+
+#Q1B
+reg2 = plm(spi ~ prev_spi+border_spi+noyr, spafin2, effect = "twoways", model = "within", index = "district")
+summary(reg2)
+
+#begin extreme weather calc
+spi = rain
+spi$rain = NULL
+spi$ct = ifelse(spi$spi < -1 | spi$spi > 1,1,0)
+spi2 = left_join(spi,maptable)
+spi2$year=NULL
+spi2$spi = NULL
+
+# period wise countsum of ext weather
+spi3 <-setNames(aggregate(spi2$ct, by=list(spi2$district,spi2$mapyear),FUN=sum, na.rm=TRUE),c("district", "year","spict"))
+
+# lagging countsum of ext weather
+spid = spi3 %>%
+  group_by(district) %>% 
+  arrange(district,year) %>% 
+  mutate(d= dplyr::lag(spict))
+
+spid = as.data.frame(spid)
+
+# finding border wise count of ext weather
+borderspi = spid
+borderspi$spict=NULL
+
+borderspi = as.data.frame(borderspi)
+names(borderspi) <- c("district", "year","Prev")
+
+# joining  count of ext weather lag to border data
+borderspi1 = left_join(border,borderspi)
+names(borderspi1) <- c("district","border_district", "year","Prev_dis")
+
+borderspi1 = borderspi1[borderspi1$year!=0,]
+borderspi1[is.na(borderspi1)] <- 0
+
+borderspi2 <-setNames(aggregate(borderspi1$Prev_dis, by=list(borderspi1$district,borderspi1$year),FUN=mean, na.rm=TRUE),c("district", "year","border_spict"))
+
+
+spifin = left_join(spid,borderspi2)
+colnames(spifin)[colnames(spifin)=="d"] <- "prev_ct"
+spifin[is.na(spifin)] <- 0
+
+spifin2 = left_join(spifin, par)
+spifin2 = left_join(spifin2,pyears) 
+
+#1c
+library(pglm)
+reg3 = pglm(spict ~ prev_ct+border_spict+noyr,spifin2, effect = "twoways", model = "within", index = "district",family = "poisson")
+summary(reg3)
+
+#Q2
+library(panelAR)
+reg4 = panelAR(new_parties ~ spict+noyr, spifin2,panelVar='district' ,timeVar='year' , autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(reg4)
+
+#Q3
+reg5 = panelAR(new_parties ~ spict+border_spict+noyr, spifin2,panelVar='district' ,timeVar='year' , autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(reg5)
+
+#getting new party data
+filpar = c("district","year","new_parties_national_scope","new_parties_state_scope","new_parties_regional_scope","political_concentration","new_parties_caste","new_parties_socialist","new_parties_communist","new_parties_secular")
+dist = district2[filpar]
+
+# joining to extreme weather data
+haz = left_join(spifin2,dist)
+
+#Q4A
+reg7 = panelAR(new_parties_national_scope ~ spict+border_spict+noyr, haz,panelVar='district' ,timeVar='year' , autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(reg7)
+
+reg8 = panelAR(new_parties_state_scope ~ spict+border_spict+noyr, haz,panelVar='district' ,timeVar='year' , autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(reg8)
+
+reg9 = panelAR(new_parties_regional_scope ~ spict+border_spict+noyr, haz,panelVar='district' ,timeVar='year' , autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(reg9)
+
+#Q4B
+reg10 = panelAR(political_concentration ~ spict+border_spict+noyr, haz,panelVar='district' ,timeVar='year' , autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(reg10)
+
+# list of new parties by district-year
+p2 = parties
+p2 = as.data.frame(p2)
+p2fil = c("district","year","party_name")
+p2 = p2[p2fil]
+p2 = unique(p2)
+p2 = p2[p2$party_name!= "",]
+
+# joining list to borders - border wise new party list
+p2blist = left_join(border,p2)
+
+# focal district wise new party list
+dislist = unique(district$district)
+dislist = as.data.frame(dislist)
+names(dislist) = c("district")
+p2list = left_join(dislist,p2)
+
+ad = p2list
+ad1 = p2blist
+
+ad1$district = NULL
+ad1 = unique(ad1)
+
+# earliest year a party was formed in border
+unblist<-setNames(aggregate(ad1$year, by=list(ad1$focal_district,ad1$party_name),FUN=min, na.rm=TRUE),c("district", "party","year"))
+names(unblist) = c("district","party_name","minyear")
+
+flist = left_join(ad,unblist)
+flist$yrfl = ifelse(flist$year > flist$minyear,1,0) 
+# new parties from border sum
+finlist<-setNames(aggregate(flist$yrfl, by=list(flist$district,flist$year),FUN=sum, na.rm=TRUE),c("district", "year","pbct"))
+
+# new parties total by district
+p3 = p2
+p3$ct=1
+initlist<-setNames(aggregate(p3$ct, by=list(p3$district,p3$year),FUN=sum, na.rm=TRUE),c("district", "year","pct"))
+
+#final file with reqd counts
+final = left_join(initlist,finlist)
+
+final[is.na(final)] <- 0
+final$pnct = final$pct - final$pbct
+
+names(final) = c("district","year","partyct","borderptyct","nonborderpartyct")
+
+filh = c("district","year","spict","border_spict","noyr")
+hazfil = haz[filh]
+
+hazfil = unique(hazfil)
+
+newpardata = left_join(hazfil,final)
+
+#Q5
+
+reg11 = panelAR(borderptyct ~ spict+border_spict+noyr, newpardata,panelVar='district' ,timeVar='year' , autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(reg11)
+reg12 = panelAR(nonborderpartyct ~ spict+border_spict+noyr, newpardata,panelVar='district' ,timeVar='year' , autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(reg12)
+
+
+#Q2
+
+reg13 = panelAR(new_parties_caste ~ spict+noyr, haz,panelVar='district' ,timeVar='year' , autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(reg13)
+
+reg14 = panelAR(new_parties_socialist ~ spict+noyr, haz,panelVar='district' ,timeVar='year' , autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(reg14)
+
+reg15 = panelAR(new_parties_communist ~ spict+noyr, haz,panelVar='district' ,timeVar='year' , autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(reg15)
+
+reg16 = panelAR(new_parties_secular ~ spict+noyr, haz,panelVar='district' ,timeVar='year' , autoCorr = "psar1", panelCorrMethod = "phet",rho.na.rm = TRUE)
+summary(reg16)
